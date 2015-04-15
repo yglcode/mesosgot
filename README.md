@@ -14,6 +14,7 @@ mesosgot: Simple Go Task Scheduler on Mesos (prototype)
 3. scheduler & tasks communicate thru Go channels(in,out) overlaying on top of native framework communication api.
 
 4. simple/static resource allocation:
+
           * only accept resource offers when resources required by all tasks are offered
           * whenever any task fail, whole system shuts down
 
