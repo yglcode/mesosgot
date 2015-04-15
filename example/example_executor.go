@@ -21,11 +21,11 @@
 package main
 
 import (
-	"fmt"
-	"strings"
 	"errors"
+	"fmt"
 	exec "github.com/mesos/mesos-go/executor"
 	got "github.com/yglcode/mesosgot"
+	"strings"
 )
 
 type ElevatorExecutor struct {
@@ -42,10 +42,10 @@ func (ee *ElevatorExecutor) Handle(taskType string, taskFunc got.AppTaskFunc) {
 }
 
 //AppTaskExecutor.RunTask() already run in its own goroutine
-func (ee *ElevatorExecutor) RunTask(taskName string, chanin <- chan got.GoTaskMsg, chanout chan<-got.GoTaskMsg/*, args []string, env map[string]string*/) error {
+func (ee *ElevatorExecutor) RunTask(taskName string, chanin <-chan got.GoTaskMsg, chanout chan<- got.GoTaskMsg /*, args []string, env map[string]string*/) error {
 	pos := strings.LastIndex(taskName, "-")
-	if pos>0 {
-		//taskName[:pos] is task type name, used for dispatch 
+	if pos > 0 {
+		//taskName[:pos] is task type name, used for dispatch
 		taskFunc := ee.mux[taskName[:pos]]
 		args := []string{taskName}
 		return taskFunc(chanin, chanout, args)
@@ -53,20 +53,20 @@ func (ee *ElevatorExecutor) RunTask(taskName string, chanin <- chan got.GoTaskMs
 	return errors.New("Cannot find handler")
 }
 
-func elevatorTaskMain(chanin <-chan got.GoTaskMsg, chanout chan<-got.GoTaskMsg, args []string/*, env map[string]string*/) error {
+func elevatorTaskMain(chanin <-chan got.GoTaskMsg, chanout chan<- got.GoTaskMsg, args []string /*, env map[string]string*/) error {
 	myName := args[0]
 	//first report myself to scheduler
-	msg := &schedMsg{myName,0,0}
-	chanout<-msg.encode()
+	msg := &schedMsg{myName, 0, 0}
+	chanout <- msg.encode()
 	//wait for scheduler and other tasks ready
 	<-chanin
 	//then send 3 msgs to scheduler
-	for i:=0;i<3;i++ {
-		msg := &schedMsg{myName,i,10+i}
+	for i := 0; i < 3; i++ {
+		msg := &schedMsg{myName, i, 10 + i}
 		chanout <- msg.encode()
 	}
 	//then tell scheduler i exit
-	msg = &schedMsg{myName,-1,-1}
+	msg = &schedMsg{myName, -1, -1}
 	chanout <- msg.encode()
 	return nil
 }

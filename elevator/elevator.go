@@ -1,9 +1,9 @@
 package main
 
 import (
+	got "github.com/yglcode/mesosgot"
 	"log"
 	"time"
-	got "github.com/yglcode/mesosgot"
 )
 
 //-------- Elevator definitions --------
@@ -13,12 +13,12 @@ import (
 //2. elevator will run each direction till end & finish all then reverse
 type Elevator struct {
 	id         int
-	taskName string
+	taskName   string
 	currFloor  int
 	goalFloor  int
 	direction  int //+:up,-:down,0:idle
 	localSched []bool
-	schedChan  <-chan got.GoTaskMsg  //recv scheduling cmds from Scheduler
+	schedChan  <-chan got.GoTaskMsg //recv scheduling cmds from Scheduler
 	statusChan chan<- got.GoTaskMsg //send status (currFloor,goalFloor) to Scheduler
 }
 
@@ -57,7 +57,7 @@ ElevatorLoop:
 				if r.currFloor == -1 && r.goalFloor == -1 {
 					break ElevatorLoop
 				}
-				log.Printf("elevator[%d] recv req [%d %d]\n", el.id, r.currFloor,r.goalFloor)
+				log.Printf("elevator[%d] recv req [%d %d]\n", el.id, r.currFloor, r.goalFloor)
 				el.localSched[r.currFloor] = true
 				el.localSched[r.goalFloor] = true
 			default:

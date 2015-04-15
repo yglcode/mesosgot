@@ -19,15 +19,15 @@
 package main
 
 import (
-	"fmt"
-	"strings"
-	"strconv"
 	"errors"
+	"fmt"
 	got "github.com/yglcode/mesosgot"
+	"strconv"
+	"strings"
 )
 
 type schedMsg struct {
-	taskName string
+	taskName  string
 	currFloor int
 	goalFloor int
 }
@@ -40,13 +40,13 @@ func (tm *schedMsg) encode() (res got.GoTaskMsg) {
 
 func (tm *schedMsg) decode(msg got.GoTaskMsg) (err error) {
 	tm.taskName = msg.TaskName
-	_, err = fmt.Sscanf(msg.MessageData, "%d %d", &tm.currFloor,&tm.goalFloor)
+	_, err = fmt.Sscanf(msg.MessageData, "%d %d", &tm.currFloor, &tm.goalFloor)
 	return
 }
 
 func taskNameIndex(taskName string) (taskType string, indx int, err error) {
 	pos := strings.LastIndex(taskName, "-")
-	if pos>0 {
+	if pos > 0 {
 		taskType = taskName[:pos]
 		indx, err = strconv.Atoi(taskName[pos+1:])
 	} else {
@@ -54,13 +54,3 @@ func taskNameIndex(taskName string) (taskType string, indx int, err error) {
 	}
 	return
 }
-
-
-
-
-
-
-
-
-
-

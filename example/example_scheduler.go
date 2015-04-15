@@ -21,17 +21,17 @@
 package main
 
 import (
-	"time"
 	log "github.com/golang/glog"
 	sched "github.com/mesos/mesos-go/scheduler"
 	got "github.com/yglcode/mesosgot"
+	"time"
 )
 
 //TaskMsg and encode/decode defined in elevator.go
 
 const (
-	TaskCount = 3
-	TimeWaitForTasksUp = 3*time.Second
+	TaskCount          = 3
+	TimeWaitForTasksUp = 3 * time.Second
 )
 
 type ElevatorScheduler struct {
@@ -45,16 +45,16 @@ func NewElevatorScheduler() *ElevatorScheduler {
 func (es *ElevatorScheduler) TasksResourceInfo() []*got.AppTaskResourceInfo {
 	return []*got.AppTaskResourceInfo{
 		&got.AppTaskResourceInfo{
-			Name: "elevator",
-			Count: TaskCount,
+			Name:        "elevator",
+			Count:       TaskCount,
 			CpusPerTask: 0.1,
-			MemPerTask: 96,
+			MemPerTask:  96,
 		},
 		&got.AppTaskResourceInfo{
-			Name: "floor",
-			Count: 4,
+			Name:        "floor",
+			Count:       4,
 			CpusPerTask: 0.1,
-			MemPerTask: 96,
+			MemPerTask:  96,
 		},
 	}
 }
@@ -67,19 +67,20 @@ func (es *ElevatorScheduler) taskCount() (count int) {
 }
 
 //scheduler will run in its own goroutine, communicate with tasks thru chans
-func (es *ElevatorScheduler) RunScheduler(schedin <-chan got.GoTaskMsg, schedout chan<-got.GoTaskMsg, schedevent chan<-got.SchedEvent) {
+func (es *ElevatorScheduler) RunScheduler(schedin <-chan got.GoTaskMsg, schedout chan<- got.GoTaskMsg, schedevent <-chan got.SchedEvent) {
 	var msg schedMsg
 	taskCount := es.taskCount()
 	//first wait for tasks come up
-	waitloop: for i:=0;i<taskCount;i++ {
+waitloop:
+	for i := 0; i < taskCount; i++ {
 		select {
-		case taskMsg := <- schedin:
+		case taskMsg := <-schedin:
 			err := msg.decode(taskMsg)
 			if err != nil {
 				continue
 			}
 			if msg.currFloor != 0 || msg.goalFloor != 0 {
-				continue 
+				continue
 			}
 			es.tasks[msg.taskName] = true
 		case <-time.After(TimeWaitForTasksUp):
@@ -89,21 +90,22 @@ func (es *ElevatorScheduler) RunScheduler(schedin <-chan got.GoTaskMsg, schedout
 	//tell all tasks start
 	msg.currFloor = 0
 	msg.goalFloor = 0
-	for tname,_ := range es.tasks {
-		log.Infoln("notify: ",tname)
+	for tname, _ := range es.tasks {
+		log.Infoln("notify: ", tname)
 		msg.taskName = tname
-		schedout<-msg.encode()
+		schedout <- msg.encode()
 	}
 	//recv msgs from all tasks
-	msgloop: for m := range schedin {
+msgloop:
+	for m := range schedin {
 		err := msg.decode(m)
 		if err != nil {
-			log.Infoln("failed decode msg: ",err)
+			log.Infoln("failed decode msg: ", err)
 			continue
 		}
 		switch {
 		case msg.currFloor == -1 && msg.goalFloor == -1:
-			log.Infoln("finished task: ",msg.taskName)
+			log.Infoln("finished task: ", msg.taskName)
 			delete(es.tasks, msg.taskName)
 			if len(es.tasks) == 0 {
 				break msgloop
@@ -121,7 +123,7 @@ func main() {
 	schedConfig := got.LoadSchedulerConfig()
 
 	schd := got.NewGoTaskScheduler(
-		"",//userName, Mesos-go will fill in user.
+		"", //userName, Mesos-go will fill in user.
 		NewElevatorScheduler(),
 		schedConfig)
 

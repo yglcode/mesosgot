@@ -1,10 +1,10 @@
 package main
 
 import (
+	got "github.com/yglcode/mesosgot"
 	"log"
 	"math/rand"
 	"time"
-	got "github.com/yglcode/mesosgot"
 )
 
 //---------- Floor related definitions --------------
@@ -13,14 +13,14 @@ import (
 // generate random pickup requests for scheduler
 // each req is a rider obj
 type Floor struct {
-	id            int         //floor number
+	id            int //floor number
 	taskName      string
-	numFloor      int         //number floors at building
-	exitChan      <-chan got.GoTaskMsg   //Scheduler send "exit" cmd on this chan
+	numFloor      int                  //number floors at building
+	exitChan      <-chan got.GoTaskMsg //Scheduler send "exit" cmd on this chan
 	pickupReqChan chan<- got.GoTaskMsg //send pickup req to scheduler
 }
 
-func NewFloor(index int, tn string, numF int, exitCh <-chan got.GoTaskMsg, pickChan chan<-got.GoTaskMsg) *Floor {
+func NewFloor(index int, tn string, numF int, exitCh <-chan got.GoTaskMsg, pickChan chan<- got.GoTaskMsg) *Floor {
 	return &Floor{
 		index,
 		tn,

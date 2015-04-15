@@ -1,5 +1,5 @@
-mesosgot: Simple Go Task Scheduler on Mesos (prototype)
-=======================================================
+mesosgot: Simple Go Task Scheduler/Framework on Mesos (prototype)
+=================================================================
 
 1. very thin layer over mesos-go api (and example scheduler/executor).
 
@@ -7,18 +7,22 @@ mesosgot: Simple Go Task Scheduler on Mesos (prototype)
 
 3. each task is a Go function with following signature which will automatically run in a goroutine:
       func(in <-chan TaskMsg, out chan<-TaskMsg, args []string, env map[string]string) error
+      App tasks will use channel "in" to receive messages from schedulers.
+      App tasks will send messages to scheduler via channel "out".
       
 4. application scheduler is also a go function automatically running in a goroutine:
-      RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent chan<-SchedEvent)
+      RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent <-chan SchedEvent)
+      App scheduler will use channel "schedin" to receive messages from tasks.
+      App scheduler will send messages to tasks via "schedout" channel.
+      App scheduler will receive scheduling events from "schedevent" channel.
       
-3. scheduler & tasks communicate thru Go channels(in,out) overlaying on top of native framework communication api.
+5. scheduler & tasks communicate thru Go channels(in,out) overlaying on top of native framework communication api.
 
-4. simple/static resource allocation:
-
+6. simple/static resource allocation:
           * only accept resource offers when resources required by all tasks are offered
           * whenever any task fail, whole system shuts down
 
-5. programming:
+7. programming:
       * build two separate executables:
               * app_scheduler: app scheduling logic
               * app_executor: containing all app tasks functions, their registration and dispatching
@@ -31,7 +35,7 @@ mesosgot: Simple Go Task Scheduler on Mesos (prototype)
 	             //return resource requirements of all tasks
 	             TasksResourceInfo() []*AppTaskResourceInfo
 	             //start running app scheduler
-	             RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent chan<-SchedEvent)
+	             RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent <-chan SchedEvent)
                 }
 
             * App scheduling logic is defined inside RunSchededuler().
@@ -46,5 +50,5 @@ mesosgot: Simple Go Task Scheduler on Mesos (prototype)
 
             * Inside RunTask(), call is dispatched by taskName and proper registered task function is called.
 
-6. implement an elevator control system on top of it as example.
+8. implement an elevator control system on top of it as example.
 

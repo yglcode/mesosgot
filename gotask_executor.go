@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package mesosgot
 
 import (
@@ -25,69 +26,84 @@ import (
 )
 
 const (
+	//Default buffer size of channels for communication between scheduler and tasks.
 	DefTaskChanLen = 256
 )
 
-type AppTaskStatus struct {
-	Name string
-	Status mesos.TaskState //int32: TaskState_TASK_RUNNING,...
-	chanin chan GoTaskMsg
+type appTaskStatus struct {
+	Name    string
+	Status  mesos.TaskState //int32: TaskState_TASK_RUNNING,...
+	chanin  chan GoTaskMsg
 	chanout chan GoTaskMsg
 }
 
-type AppTaskFunc func(in <- chan GoTaskMsg, out chan<-GoTaskMsg, args []string/*, env map[string]string*/) error
+//The signature of task functions.
+//App tasks will use channel "in" to receive messages from schedulers.
+//App tasks will send messages to scheduler via channel "out".
+type AppTaskFunc func(in <-chan GoTaskMsg, out chan<- GoTaskMsg, args []string /*, env map[string]string*/) error
 
+//Common interface of app task executor.
 type AppTaskExecutor interface {
-	RunTask(taskName string, in <- chan GoTaskMsg, out chan<-GoTaskMsg/*, args []string, env map[string]string*/) error
+	//Start app tasks based on task name.
+	//App tasks will use channel "in" to receive messages from schedulers.
+	//App tasks will send messages to scheduler via channel "out".
+	RunTask(taskName string, in <-chan GoTaskMsg, out chan<- GoTaskMsg /*, args []string, env map[string]string*/) error
 }
 
+//Responsible for starting app tasks and forwarding messages between scheduler and tasks.
 type GoTaskExecutor struct {
 	tasksLaunched int
-	driver exec.ExecutorDriver
-	appExec AppTaskExecutor
-	appTasks map[string]*AppTaskStatus
-	fwMsgChan chan GoTaskMsg
-	exitChan chan struct{}
+	driver        exec.ExecutorDriver
+	appExec       AppTaskExecutor
+	appTasks      map[string]*appTaskStatus
+	fwMsgChan     chan GoTaskMsg
+	exitChan      chan struct{}
 }
 
+//Create a Go Task Executor to be used with Mesos Executor Driver.
+//Use an AppTaskExecutor to do app specific dispatching to tasks.
 func NewGoTaskExecutor(ae AppTaskExecutor) (exec *GoTaskExecutor) {
 	exec = &GoTaskExecutor{
 		tasksLaunched: 0,
-		driver:nil,
-		appExec: ae,
-		appTasks: make(map[string]*AppTaskStatus),
-		fwMsgChan: make(chan GoTaskMsg, 2*DefTaskChanLen),
-		exitChan: make(chan struct{}),
+		driver:        nil,
+		appExec:       ae,
+		appTasks:      make(map[string]*appTaskStatus),
+		fwMsgChan:     make(chan GoTaskMsg, 2*DefTaskChanLen),
+		exitChan:      make(chan struct{}),
 	}
 	return
 }
 
+//Mesos framework method.
 func (exec *GoTaskExecutor) Registered(driver exec.ExecutorDriver, execInfo *mesos.ExecutorInfo, fwinfo *mesos.FrameworkInfo, slaveInfo *mesos.SlaveInfo) {
 	fmt.Println("Registered Executor on slave ", slaveInfo.GetHostname())
 }
 
+//Mesos framework method.
 func (exec *GoTaskExecutor) Reregistered(driver exec.ExecutorDriver, slaveInfo *mesos.SlaveInfo) {
 	fmt.Println("Re-registered Executor on slave ", slaveInfo.GetHostname())
 }
 
+//Mesos framework method.
 func (exec *GoTaskExecutor) Disconnected(exec.ExecutorDriver) {
 	fmt.Println("Executor disconnected.")
 }
 
+//Launch app task in a separate goroutine.
 func (exec *GoTaskExecutor) LaunchTask(driver exec.ExecutorDriver, taskInfo *mesos.TaskInfo) {
 	if exec.driver == nil {
 		exec.driver = driver
-		go exec.RunMsgPump()
+		go exec.runMsgPump()
 	}
 	tname := taskInfo.GetName()
 	if exec.appTasks[tname] != nil {
 		fmt.Println("XX duplicated task name")
 		return
 	}
-	appSt := &AppTaskStatus{
-		Name: tname,
-		Status: mesos.TaskState_TASK_RUNNING,
-		chanin: make(chan GoTaskMsg, DefTaskChanLen),
+	appSt := &appTaskStatus{
+		Name:    tname,
+		Status:  mesos.TaskState_TASK_RUNNING,
+		chanin:  make(chan GoTaskMsg, DefTaskChanLen),
 		chanout: exec.fwMsgChan,
 	}
 	exec.appTasks[tname] = appSt
@@ -137,10 +153,12 @@ func (exec *GoTaskExecutor) LaunchTask(driver exec.ExecutorDriver, taskInfo *mes
 	}(tname, appSt.chanin, appSt.chanout)
 }
 
+//Mesos framework method.
 func (exec *GoTaskExecutor) KillTask(exec.ExecutorDriver, *mesos.TaskID) {
 	fmt.Println("Kill task")
 }
 
+//Forward messages from scheduler to tasks.
 func (exec *GoTaskExecutor) FrameworkMessage(driver exec.ExecutorDriver, rawMsg string) {
 	//fmt.Println("Got framework message: ", msg)
 	msg, err := DecodeMsg(rawMsg)
@@ -151,20 +169,24 @@ func (exec *GoTaskExecutor) FrameworkMessage(driver exec.ExecutorDriver, rawMsg 
 	exec.appTasks[msg.TaskName].chanin <- msg
 }
 
+//Mesos framework method.
 func (exec *GoTaskExecutor) Shutdown(exec.ExecutorDriver) {
 	fmt.Println("Shutting down the executor")
 	close(exec.exitChan) //shutdown framework msg pump
 }
 
+//Mesos framework method.
 func (exec *GoTaskExecutor) Error(driver exec.ExecutorDriver, err string) {
 	fmt.Println("Got error message:", err)
 }
 
-func (exc *GoTaskExecutor) RunMsgPump() {
+//Forward messages from tasks to scheduler.
+func (exc *GoTaskExecutor) runMsgPump() {
 	fmt.Println("start sending framework messages to scheduler")
-	msgpump: for {
+msgpump:
+	for {
 		select {
-		case msg := <- exc.fwMsgChan:
+		case msg := <-exc.fwMsgChan:
 			data, err := EncodeMsg(msg)
 			if err != nil {
 				fmt.Println("failed to encode msg: ", err)
@@ -172,7 +194,7 @@ func (exc *GoTaskExecutor) RunMsgPump() {
 			}
 			_, err = exc.driver.SendFrameworkMessage(data)
 			if err != nil {
-				fmt.Println("failed SendFrameworkMessage: ",err)
+				fmt.Println("failed SendFrameworkMessage: ", err)
 			}
 		case <-exc.exitChan:
 			break msgpump
@@ -181,6 +203,7 @@ func (exc *GoTaskExecutor) RunMsgPump() {
 	fmt.Println("stop sending framework messages to scheduler")
 }
 
+//Return Mesos driver config for this GoTask executor.
 func (exc *GoTaskExecutor) DriverConfig() exec.DriverConfig {
 	return exec.DriverConfig{
 		Executor: exc,

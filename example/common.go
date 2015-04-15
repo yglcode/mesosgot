@@ -24,7 +24,7 @@ import (
 )
 
 type schedMsg struct {
-	taskName string
+	taskName  string
 	currFloor int
 	goalFloor int
 }
@@ -37,6 +37,6 @@ func (tm *schedMsg) encode() (res got.GoTaskMsg) {
 
 func (tm *schedMsg) decode(msg got.GoTaskMsg) (err error) {
 	tm.taskName = msg.TaskName
-	_, err = fmt.Sscanf(msg.MessageData, "%d %d", &tm.currFloor,&tm.goalFloor)
+	_, err = fmt.Sscanf(msg.MessageData, "%d %d", &tm.currFloor, &tm.goalFloor)
 	return
 }

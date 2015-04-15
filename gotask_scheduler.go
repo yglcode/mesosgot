@@ -1,23 +1,56 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+/*
+mesosgot: Simple Go Task Scheduler on Mesos (prototype)
+
+1. very thin layer over mesos-go api (and example scheduler/executor).
+
+2. for launching cluster of relatively long running tasks running in its own goroutine at slave machines.
+
+3. each task is a Go function with following signature which will automatically run in a goroutine:
+      func(in <-chan TaskMsg, out chan<-TaskMsg, args []string, env map[string]string) error
+      App tasks will use channel "in" to receive messages from schedulers.
+      App tasks will send messages to scheduler via channel "out".
+
+4. application scheduler is also a go function automatically running in a goroutine:
+      RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent <-chan SchedEvent)
+      App scheduler will use channel "schedin" to receive messages from tasks.
+      App scheduler will send messages to tasks via "schedout" channel.
+      App scheduler will receive scheduling events from "schedevent" channel.
+
+5. scheduler & tasks communicate thru Go channels(in,out) overlaying on top of native framework communication api.
+
+6. simple/static resource allocation:
+          * only accept resource offers when resources required by all tasks are offered
+          * whenever any task fail, whole system shuts down
+7. programming:
+      * build two separate executables:
+              * app_scheduler: app scheduling logic
+              * app_executor: containing all app tasks functions, their registration and dispatching
+      * app_scheduler: create GoTaskScheduler and plug into MesosSchedulerDriver
+            * GoTaskScheduler will need a AppTaskScheduler as following:
+
+                type AppTaskScheduler interface {
+	             //return resource requirements of all tasks
+	             TasksResourceInfo() []*AppTaskResourceInfo
+	             //start running app scheduler
+	             RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent chan<-SchedEvent)
+                }
+
+            * App scheduling logic is defined inside RunSchededuler().
+
+      * app_executor: create GoTaskExecutor and plug into MesosExecutorDriver
+            * GoTaskExecutor will need a AppTaskExecutor as following:
+
+                type AppTaskExecutor interface {
+	             RunTask(taskName string, in <- chan TaskMsg, out chan<-TaskMsg, args []string, env map[string]string) error
+                }
+
+            * Inside RunTask(), call is dispatched by taskName and proper registered task function is called.
+Licensed under Apache 2.0
+*/
 package mesosgot
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -25,7 +58,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"bytes"
 
 	"github.com/gogo/protobuf/proto"
 	log "github.com/golang/glog"
@@ -40,14 +72,21 @@ import (
 
 //GoTask scheduler/framework config parameters
 type GoTaskSchedConfig struct {
+	//Binding address for artifact server
 	Address string
+	//Binding port for artifact server
 	ArtifactPort int
+	//Authentication provider
 	AuthProvider string
+	//Master address, default 127.0.0.1:5050
 	Master string
+	//Path to app framework executor
 	ExecutorPath string
+	//Mesos authentication principal
 	MesosAuthPrincipal string
+	//Mesos authentication secret file
 	MesosAuthSecretFile string
-	TaskRefuseSeconds float64
+	TaskRefuseSeconds   float64
 }
 
 //standard command line flags for specifying GoTask scheduler config
@@ -66,101 +105,108 @@ func init() {
 	flag.Parse()
 }
 
+//Load scheduler config parameters from default settings and command line flags.
 func LoadSchedulerConfig() (config *GoTaskSchedConfig) {
 	log.Infoln("Loading GoTask Scheduler Configurations ...")
-	config = &GoTaskSchedConfig {
-		Address: *address,
-		ArtifactPort: *artifactPort,
-		AuthProvider: *authProvider,
-		Master: *master,
-		ExecutorPath: *executorPath,
-		MesosAuthPrincipal: *mesosAuthPrincipal,
+	config = &GoTaskSchedConfig{
+		Address:             *address,
+		ArtifactPort:        *artifactPort,
+		AuthProvider:        *authProvider,
+		Master:              *master,
+		ExecutorPath:        *executorPath,
+		MesosAuthPrincipal:  *mesosAuthPrincipal,
 		MesosAuthSecretFile: *mesosAuthSecretFile,
-		TaskRefuseSeconds: 60,
+		TaskRefuseSeconds:   60,
 	}
 	return
 }
 
-//--- GoTask scheduler -----
+//GoTask scheduler, responsible for starting tasks at slaves, forwarding msgs between scheduler and tasks.
 type GoTaskScheduler struct {
-	config *GoTaskSchedConfig
+	config        *GoTaskSchedConfig
 	executor      *mesos.ExecutorInfo
-	driver sched.SchedulerDriver
-	fwinfo *mesos.FrameworkInfo
-	cred *mesos.Credential
-	bindAddr net.IP
-	user string
-	name string
-	appSched AppTaskScheduler
-	tasks map[string]*mesos.TaskInfo
-	schedin chan GoTaskMsg
-	schedout chan GoTaskMsg
-	schedevent chan SchedEvent
-	exitChan chan struct{}
-	cpuSize float64
-	memSize float64
+	driver        sched.SchedulerDriver
+	fwinfo        *mesos.FrameworkInfo
+	cred          *mesos.Credential
+	bindAddr      net.IP
+	user          string
+	name          string
+	appSched      AppTaskScheduler
+	tasks         map[string]*mesos.TaskInfo
+	schedin       chan GoTaskMsg
+	schedout      chan GoTaskMsg
+	schedevent    chan SchedEvent
+	exitChan      chan struct{}
+	cpuSize       float64
+	memSize       float64
 	tasksLaunched int
-	tasksRunning int
+	tasksRunning  int
 	tasksFinished int
 	totalTasks    int
 }
 
-//placeholder, add detailed event tags
+//Scheduler events (such as task failure, disconnect, etc.) to be forwarded to App scheduler. Need to be updated with detailed event tags.
 type SchedEvent struct {
 	TaskName string
-	Message string
+	Message  string
 }
 
+//AppTaskResourceInfo will allow app scheduler specify the resource requirements of app tasks.
 type AppTaskResourceInfo struct {
-	Name string
-	Count int
+	Name        string
+	Count       int
 	CpusPerTask float64
-	MemPerTask float64
+	MemPerTask  float64
 }
 
-//common interface implmented by all app/framework scheduler
+//Common interface implmented by all app/framework scheduler
 type AppTaskScheduler interface {
 	//return resource requirements of all tasks
 	TasksResourceInfo() []*AppTaskResourceInfo
-	//start running scheduler
-	RunScheduler(schedin <-chan GoTaskMsg, schedout chan<-GoTaskMsg, schedevent chan<-SchedEvent)
+	//start running app scheduler in a separate goroutine.
+	//App scheduler will use channel "schedin" to receive messages from tasks.
+	//App scheduler will send messages to tasks via "schedout" channel.
+	//App scheduler will receive scheduling events from "schedevent" channel.
+	RunScheduler(schedin <-chan GoTaskMsg, schedout chan<- GoTaskMsg, schedevent <-chan SchedEvent)
 }
 
+//Create a new Go Task Scheduler to be used with Mesos Scheduler Driver.
+//Use an instance of AppTaskScheduler to define tasks resource requirement and app scheduling.
 func NewGoTaskScheduler(userName string, aps AppTaskScheduler, conf *GoTaskSchedConfig) (sched *GoTaskScheduler) {
 	sched = &GoTaskScheduler{
-		config: conf,
-		executor: nil,
-		driver: nil,
-		fwinfo: nil,
-		cred: nil,
-		bindAddr: nil,
-		user: userName, 
-		name: "GoTask Framework",
-		appSched: aps,
-		tasks: make(map[string]*mesos.TaskInfo),
-		schedin: make(chan GoTaskMsg, 2*DefTaskChanLen),
-		schedout: make(chan GoTaskMsg, 2*DefTaskChanLen),
-		schedevent: make(chan SchedEvent, 2*DefTaskChanLen),
-		exitChan: make(chan struct{}),
-		cpuSize: 0,
-		memSize: 0,
+		config:        conf,
+		executor:      nil,
+		driver:        nil,
+		fwinfo:        nil,
+		cred:          nil,
+		bindAddr:      nil,
+		user:          userName,
+		name:          "GoTask Framework",
+		appSched:      aps,
+		tasks:         make(map[string]*mesos.TaskInfo),
+		schedin:       make(chan GoTaskMsg, 2*DefTaskChanLen),
+		schedout:      make(chan GoTaskMsg, 2*DefTaskChanLen),
+		schedevent:    make(chan SchedEvent, 2*DefTaskChanLen),
+		exitChan:      make(chan struct{}),
+		cpuSize:       0,
+		memSize:       0,
 		tasksLaunched: 0,
-		tasksRunning: 0,
+		tasksRunning:  0,
 		tasksFinished: 0,
 		totalTasks:    0,
 	}
 	//calc appTasks resource requirements
 	taskResInfo := aps.TasksResourceInfo()
 	for _, tri := range taskResInfo {
-		sched.totalTasks+=tri.Count
-		sched.cpuSize+=float64(tri.Count)*tri.CpusPerTask
-		sched.memSize+=float64(tri.Count)*tri.MemPerTask
+		sched.totalTasks += tri.Count
+		sched.cpuSize += float64(tri.Count) * tri.CpusPerTask
+		sched.memSize += float64(tri.Count) * tri.MemPerTask
 	}
 	// build command executor
 	sched.executor = prepareExecutorInfo(conf)
 	//
 	sched.fwinfo = &mesos.FrameworkInfo{
-		User: proto.String(sched.user), 
+		User: proto.String(sched.user),
 		Name: proto.String(sched.name),
 	}
 
@@ -189,20 +235,22 @@ func NewGoTaskScheduler(userName string, aps AppTaskScheduler, conf *GoTaskSched
 	return
 }
 
-func (sched *GoTaskScheduler) RunMsgPump() {
+//Responsible for forwarding msgs from scheduler to tasks at slave nodes.
+func (sched *GoTaskScheduler) runMsgPump() {
 	fmt.Println("start sending framework messages to tasks")
-	msgpump: for {
+msgpump:
+	for {
 		select {
-		case msg := <- sched.schedout:
+		case msg := <-sched.schedout:
 			taskInfo := sched.tasks[msg.TaskName]
 			data, err := EncodeMsg(msg)
 			if err != nil {
-				log.Infoln("failed to encode msg: ",err)
+				log.Infoln("failed to encode msg: ", err)
 				continue msgpump
 			}
 			_, err = sched.driver.SendFrameworkMessage(sched.executor.ExecutorId, taskInfo.SlaveId, data)
 			if err != nil {
-				log.Infoln("failed SendFrameworkMessage to tasks: ",err)
+				log.Infoln("failed SendFrameworkMessage to tasks: ", err)
 			}
 		case <-sched.exitChan:
 			break msgpump
@@ -211,14 +259,17 @@ func (sched *GoTaskScheduler) RunMsgPump() {
 	fmt.Println("stop sending framework messages to tasks")
 }
 
+//Mesos framework method.
 func (sched *GoTaskScheduler) Registered(driver sched.SchedulerDriver, frameworkId *mesos.FrameworkID, masterInfo *mesos.MasterInfo) {
 	log.Infoln("Framework Registered with Master ", masterInfo)
 }
 
+//Mesos framework method.
 func (sched *GoTaskScheduler) Reregistered(driver sched.SchedulerDriver, masterInfo *mesos.MasterInfo) {
 	log.Infoln("Framework Re-Registered with Master ", masterInfo)
 }
 
+//Mesos framework method.
 func (sched *GoTaskScheduler) Disconnected(sched.SchedulerDriver) {}
 
 func (sched *GoTaskScheduler) haveEnoughResources(offers []*mesos.Offer) bool {
@@ -245,6 +296,7 @@ func (sched *GoTaskScheduler) haveEnoughResources(offers []*mesos.Offer) bool {
 	return false
 }
 
+//Mesos framework method. Check resources available and start tasks at slave nodes.
 func (sched *GoTaskScheduler) ResourceOffers(driver sched.SchedulerDriver, offers []*mesos.Offer) {
 	//if already launched, or not enough resource, return
 	if sched.tasksLaunched > 0 || !sched.haveEnoughResources(offers) {
@@ -253,7 +305,7 @@ func (sched *GoTaskScheduler) ResourceOffers(driver sched.SchedulerDriver, offer
 	if sched.driver == nil {
 		sched.driver = driver
 		//start msg pump, it will exit by exitChan
-		go sched.RunMsgPump()
+		go sched.runMsgPump()
 		//start app/framework scheduler
 		go func() {
 			sched.appSched.RunScheduler(sched.schedin, sched.schedout, sched.schedevent)
@@ -336,6 +388,7 @@ func (sched *GoTaskScheduler) ResourceOffers(driver sched.SchedulerDriver, offer
 	}
 }
 
+//Mesos framework method.
 func (sched *GoTaskScheduler) StatusUpdate(driver sched.SchedulerDriver, status *mesos.TaskStatus) {
 	taskId := status.TaskId.GetValue()
 	log.Infoln("Status update: task ", taskId, " is in state ", status.State.Enum().String())
@@ -353,7 +406,7 @@ func (sched *GoTaskScheduler) StatusUpdate(driver sched.SchedulerDriver, status 
 		log.Infoln("All running tasks completed, stopping framework.")
 		close(sched.exitChan) //stop msgpump
 		driver.Stop(false)
-                */
+		*/
 	}
 
 	if status.GetState() == mesos.TaskState_TASK_LOST ||
@@ -369,24 +422,32 @@ func (sched *GoTaskScheduler) StatusUpdate(driver sched.SchedulerDriver, status 
 	}
 }
 
+//Mesos framework method.
 func (sched *GoTaskScheduler) OfferRescinded(sched.SchedulerDriver, *mesos.OfferID) {}
 
+//Forward messages from tasks at slave nodes to scheduler.
 func (sched *GoTaskScheduler) FrameworkMessage(driver sched.SchedulerDriver, execid *mesos.ExecutorID, slaveid *mesos.SlaveID, rawMsg string) {
 	msg, err := DecodeMsg(rawMsg)
 	if err != nil {
-		log.Infoln("failed to decode msg: ",err)
+		log.Infoln("failed to decode msg: ", err)
 	} else {
-		sched.schedin <-msg
+		sched.schedin <- msg
 	}
 }
+
+//Mesos framework method.
 func (sched *GoTaskScheduler) SlaveLost(sched.SchedulerDriver, *mesos.SlaveID) {}
+
+//Mesos framework method.
 func (sched *GoTaskScheduler) ExecutorLost(sched.SchedulerDriver, *mesos.ExecutorID, *mesos.SlaveID, int) {
 }
 
+//Mesos framework method.
 func (sched *GoTaskScheduler) Error(driver sched.SchedulerDriver, err string) {
 	log.Infoln("Scheduler received error:", err)
 }
 
+//Return a Mesos scheduler driver for this scheduler.
 func (schd *GoTaskScheduler) DriverConfig() (drvConfig sched.DriverConfig) {
 	drvConfig = sched.DriverConfig{
 		Scheduler:      schd,
@@ -403,7 +464,7 @@ func (schd *GoTaskScheduler) DriverConfig() (drvConfig sched.DriverConfig) {
 	return
 }
 
-// returns (downloadURI, basename(path))
+//Returns (downloadURI, basename(path))
 func serveExecutorArtifact(config *GoTaskSchedConfig) (*string, string) {
 	serveFile := func(pattern string, filename string) {
 		http.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
@@ -449,12 +510,13 @@ func prepareExecutorInfo(config *GoTaskSchedConfig) *mesos.ExecutorInfo {
 	}
 }
 
-//TaskMsg and encoder/decoder
-//GoTask_framework only has scheduler<->tasks communications, so simple rule:
-//msg.TaskName always points to task's name, no matter which direction it goes,
-//so it can be either msg source or msg destination.
+/*TaskMsg and encoder/decoder.
+GoTask_framework only has scheduler<->tasks communications, so simple rule:
+msg.TaskName always points to task's name, no matter which direction it goes,
+so it can be either msg source or msg destination.
+*/
 type GoTaskMsg struct {
-	TaskName string
+	TaskName    string
 	MessageData string
 }
 
@@ -463,14 +525,15 @@ const (
 	msg_field_delimiter = '^'
 )
 
+//Encode GoTaskMsg to a string to be passed thru Mesos native FrameworkMessage.
 func EncodeMsg(m GoTaskMsg) (s string, e error) {
 	var buf bytes.Buffer
 	_, e = buf.WriteString(m.TaskName)
-	if e!=nil {
+	if e != nil {
 		return
 	}
 	e = buf.WriteByte(msg_field_delimiter)
-	if e!= nil {
+	if e != nil {
 		return
 	}
 	_, e = buf.WriteString(m.MessageData)
@@ -481,6 +544,7 @@ func EncodeMsg(m GoTaskMsg) (s string, e error) {
 	return
 }
 
+//Decode a string (from Mesos native FrameworkMessage) to GoTaskMsg to be passed to tasks and scheduler.
 func DecodeMsg(s string) (m GoTaskMsg, e error) {
 	buf := bytes.NewBufferString(s)
 	m.TaskName, e = buf.ReadString(msg_field_delimiter)

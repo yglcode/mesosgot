@@ -14,12 +14,12 @@ package main
 
 import (
 	"fmt"
+	got "github.com/yglcode/mesosgot"
 	"log"
 	"math/rand"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
-	got "github.com/yglcode/mesosgot"
 )
 
 //-------- Settings for elevator simulator -------
@@ -47,17 +47,17 @@ const (
 //4. keep all channels communicating with elevators, floors
 //5. report scheduler overall status
 type Scheduler struct {
-	numFloor int
-	numElevator int
-	elevStatus     []*schedMsg    //elevator status
-	chanin  <-chan got.GoTaskMsg         //chan for recv pickup reqs from floors
-	chanout chan<-got.GoTaskMsg //chans for recv elevator status updates
-	waitUpQue      [][]*schedMsg           //queue of riders waiting going up
-	waitDownQue    [][]*schedMsg           //queue of riders waiting going down
-	schedTickChan  <-chan time.Time     //time ticks to invoke scheduling
+	numFloor      int
+	numElevator   int
+	elevStatus    []*schedMsg          //elevator status
+	chanin        <-chan got.GoTaskMsg //chan for recv pickup reqs from floors
+	chanout       chan<- got.GoTaskMsg //chans for recv elevator status updates
+	waitUpQue     [][]*schedMsg        //queue of riders waiting going up
+	waitDownQue   [][]*schedMsg        //queue of riders waiting going down
+	schedTickChan <-chan time.Time     //time ticks to invoke scheduling
 }
 
-func NewScheduler(nfloor, nelevator int, chin <-chan got.GoTaskMsg, chout chan<-got.GoTaskMsg) (s *Scheduler) {
+func NewScheduler(nfloor, nelevator int, chin <-chan got.GoTaskMsg, chout chan<- got.GoTaskMsg) (s *Scheduler) {
 	s = &Scheduler{
 		nfloor,
 		nelevator,
@@ -71,8 +71,8 @@ func NewScheduler(nfloor, nelevator int, chin <-chan got.GoTaskMsg, chout chan<-
 	//init random number generator
 	rand.Seed(time.Now().UnixNano())
 	//
-	for i:=0;i<nelevator;i++ {
-		s.elevStatus[i]=&schedMsg{"elevator-"+strconv.Itoa(i),0,0}
+	for i := 0; i < nelevator; i++ {
+		s.elevStatus[i] = &schedMsg{"elevator-" + strconv.Itoa(i), 0, 0}
 	}
 	return
 }
@@ -81,10 +81,10 @@ func NewScheduler(nfloor, nelevator int, chin <-chan got.GoTaskMsg, chout chan<-
 func (s *Scheduler) Status() (res [][]int) {
 	for i := 0; i < len(s.elevStatus); i++ {
 		name := s.elevStatus[i].taskName
-		pos := strings.LastIndex(name,"-")
+		pos := strings.LastIndex(name, "-")
 		id := 0
-		if pos>0 {
-			id, _= strconv.Atoi(name[pos+1:])
+		if pos > 0 {
+			id, _ = strconv.Atoi(name[pos+1:])
 		}
 		res = append(res, []int{id, s.elevStatus[i].currFloor,
 			s.elevStatus[i].goalFloor})
@@ -114,7 +114,7 @@ func (s *Scheduler) Run() {
 	//setup exitchan
 	exitChan := make(chan struct{})
 	go func() {
-		<-time.After(time.Duration(DefaultSimulationSeconds)*time.Second)
+		<-time.After(time.Duration(DefaultSimulationSeconds) * time.Second)
 		close(exitChan)
 	}()
 	//start main logic
@@ -139,17 +139,17 @@ SchedulerLoop:
 		case m := <-s.chanin:
 			msg := &schedMsg{}
 			err := msg.decode(m)
-			if err!=nil {
-				log.Println("failed to decode msg: ",err)
+			if err != nil {
+				log.Println("failed to decode msg: ", err)
 				continue SchedulerLoop
 			}
 			taskType, idx, err := taskNameIndex(msg.taskName)
 			switch {
-			case taskType=="elevator":
+			case taskType == "elevator":
 				//update elevator status
 				log.Printf("Scheduler recv elevator status update: %v\n", msg)
 				s.elevStatus[idx] = msg
-			case taskType=="floor":
+			case taskType == "floor":
 				//recv pickup reqs from floors
 				//log.Printf("Scheduler recv pickup req %v\n", r)
 				if (msg.goalFloor - msg.currFloor) > 0 {
@@ -256,7 +256,7 @@ func (s *Scheduler) schedule() {
 				}
 			}
 			msg := schedMsg{idleElevs[pos].taskName, jumpBot, jumpBot}
-			s.chanout<-msg.encode()
+			s.chanout <- msg.encode()
 			pos++
 		}
 		if len(idleElevs) > 1 && numWaitDown > 0 {
@@ -268,7 +268,7 @@ func (s *Scheduler) schedule() {
 				}
 			}
 			msg := schedMsg{idleElevs[pos].taskName, jumpTop, jumpTop}
-			s.chanout<-msg.encode()
+			s.chanout <- msg.encode()
 			pos++
 		}
 
