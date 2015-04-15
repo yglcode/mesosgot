@@ -28,6 +28,7 @@ mesosgot: Simple Go Task Scheduler/Framework on Mesos (prototype)
 
 7. programming:
       * build two separate executables:
+
               * app_scheduler: app scheduling logic
               * app_executor: containing all app tasks functions, their registration and dispatching
 
