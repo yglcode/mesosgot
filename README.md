@@ -6,12 +6,14 @@ mesosgot: Simple Go Task Scheduler/Framework on Mesos (prototype)
 2. for launching cluster of relatively long running tasks running in its own goroutine at slave machines.
 
 3. each task is a Go function with following signature which will automatically run in a goroutine:
+
 	func(in <-chan TaskMsg, out chan<-TaskMsg, args []string, env map[string]string) error
 
 	* App tasks will use channel "in" to receive messages from schedulers.
 	* App tasks will send messages to scheduler via channel "out".
       
 4. application scheduler is also a go function automatically running in a goroutine:
+
 	RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent <-chan SchedEvent)
 
 	* App scheduler will use channel "schedin" to receive messages from tasks.
@@ -31,20 +33,24 @@ mesosgot: Simple Go Task Scheduler/Framework on Mesos (prototype)
 
 	* app_scheduler: create GoTaskScheduler and plug into MesosSchedulerDriver
 		* GoTaskScheduler will need a AppTaskScheduler as following:
+
                 type AppTaskScheduler interface {
 	             //return resource requirements of all tasks
 	             TasksResourceInfo() []*AppTaskResourceInfo
 	             //start running app scheduler
 	             RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent <-chan SchedEvent)
                 }
+
 		* App scheduling logic is defined inside RunSchededuler().
 
 	* app_executor: create GoTaskExecutor and plug into MesosExecutorDriver
 		* GoTaskExecutor will need a AppTaskExecutor as following:
+
                 type AppTaskExecutor interface {
 	             RunTask(taskName string, in <- chan TaskMsg, out chan<-TaskMsg/*, args []string, env map[string]string*/) error
                 }
-	* Inside RunTask(), call is dispatched by taskName and proper registered task function is called.
+
+		* Inside RunTask(), call is dispatched by taskName and proper registered task function is called.
 
 8. implement an elevator control system on top of it as example.
 
