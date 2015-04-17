@@ -49,7 +49,11 @@ ElevatorLoop:
 	schedcmd:
 		for {
 			select {
-			case m = <-el.schedChan:
+			case m, chanOpen := <-el.schedChan:
+				if !chanOpen {
+					//system has closed my input chan, exit
+					break ElevatorLoop
+				}
 				if r.decode(m) != nil {
 					log.Printf("failed to decode msg")
 					continue schedcmd

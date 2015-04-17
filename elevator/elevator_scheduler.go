@@ -44,16 +44,20 @@ func NewElevatorScheduler() *ElevatorScheduler {
 func (es *ElevatorScheduler) TasksResourceInfo() []*got.AppTaskResourceInfo {
 	return []*got.AppTaskResourceInfo{
 		&got.AppTaskResourceInfo{
-			Name:        "elevator",
-			Count:       DefaultNumberOfElevators,
-			CpusPerTask: 0.1,
-			MemPerTask:  96,
+			Name:  "elevator",
+			Count: DefaultNumberOfElevators,
+			Resources: map[string]float64{
+				"cpus": 0.1,
+				"mem":  96,
+			},
 		},
 		&got.AppTaskResourceInfo{
-			Name:        "floor",
-			Count:       DefaultNumberOfFloors,
-			CpusPerTask: 0.1,
-			MemPerTask:  96,
+			Name:  "floor",
+			Count: DefaultNumberOfFloors,
+			Resources: map[string]float64{
+				"cpus": 0.1,
+				"mem":  96,
+			},
 		},
 	}
 }
@@ -107,7 +111,7 @@ waitloop:
 		schedout <- msg.encode()
 	}
 	//wait for all tasks exit
-msgloop:
+exitloop:
 	for m := range schedin {
 		err := msg.decode(m)
 		if err != nil {
@@ -119,7 +123,7 @@ msgloop:
 			log.Infoln("finished task: ", msg.taskName)
 			delete(es.tasks, msg.taskName)
 			if len(es.tasks) == 0 {
-				break msgloop
+				break exitloop
 			}
 		default:
 			log.Infof("recv %v\n", msg)

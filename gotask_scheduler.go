@@ -9,6 +9,7 @@ mesosgot: Simple Go Task Scheduler on Mesos (prototype)
       func(in <-chan TaskMsg, out chan<-TaskMsg, args []string, env map[string]string) error
       App tasks will use channel "in" to receive messages from schedulers.
       App tasks will send messages to scheduler via channel "out".
+      Channel "in" will be closed to tell task exit (such as when killed by scheduler, or system shuts down).
 
 4. application scheduler is also a go function automatically running in a goroutine:
       RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent <-chan SchedEvent)
@@ -145,18 +146,61 @@ type GoTaskScheduler struct {
 	totalTasks    int
 }
 
-//Scheduler events (such as task failure, disconnect, etc.) to be forwarded to App scheduler. Need to be updated with detailed event tags.
+//Scheduler events (such as task failure, disconnect, etc.) to be forwarded to App scheduler, and limited set of events to tasks (such as disconn, shutdown)
+type SchedEventType int
+
+const (
+	Registered SchedEventType = iota
+	Reregistered
+	Disconnected
+	TaskRunning
+	TaskFinished
+	TaskFailed
+	TaskKilled
+	TaskLost
+	OfferRescinded
+	SlaveLost
+	ExecutorLost
+	Shutdown
+	Error
+	NumSchedEventTypes
+)
+
+var eventTypeNames = []string{
+	"Registered",
+	"Reregistered",
+	"Disconnected",
+	"TaskRunning",
+	"TaskFinished",
+	"TaskFailed",
+	"TaskKilled",
+	"TaskLost",
+	"OfferRescinded",
+	"SlaveLost",
+	"ExecutorLost",
+	"Shutdown",
+	"Error",
+}
+
+func (et SchedEventType) String() string {
+	if et < NumSchedEventTypes {
+		return eventTypeNames[et]
+	}
+	return "UnknownEventType"
+}
+
 type SchedEvent struct {
-	TaskName string
-	Message  string
+	EventType SchedEventType
+	EventData interface{} //the type of event data depend on event type
 }
 
 //AppTaskResourceInfo will allow app scheduler specify the resource requirements of app tasks.
 type AppTaskResourceInfo struct {
-	Name        string
-	Count       int
-	CpusPerTask float64
-	MemPerTask  float64
+	Name      string
+	Count     int
+	Resources map[string]float64 //map keys = Mesos resource names: "cpus", "mem"...
+	Args      []string
+	Env       map[string]string
 }
 
 //Common interface implmented by all app/framework scheduler
@@ -199,8 +243,8 @@ func NewGoTaskScheduler(userName string, aps AppTaskScheduler, conf *GoTaskSched
 	taskResInfo := aps.TasksResourceInfo()
 	for _, tri := range taskResInfo {
 		sched.totalTasks += tri.Count
-		sched.cpuSize += float64(tri.Count) * tri.CpusPerTask
-		sched.memSize += float64(tri.Count) * tri.MemPerTask
+		sched.cpuSize += float64(tri.Count) * tri.Resources["cpus"]
+		sched.memSize += float64(tri.Count) * tri.Resources["mem"]
 	}
 	// build command executor
 	sched.executor = prepareExecutorInfo(conf)
@@ -270,7 +314,10 @@ func (sched *GoTaskScheduler) Reregistered(driver sched.SchedulerDriver, masterI
 }
 
 //Mesos framework method.
-func (sched *GoTaskScheduler) Disconnected(sched.SchedulerDriver) {}
+func (sched *GoTaskScheduler) Disconnected(driver sched.SchedulerDriver) {
+	log.Infoln("Framework Disconnected with Driver")
+	sched.schedevent <- SchedEvent{Disconnected, driver}
+}
 
 func (sched *GoTaskScheduler) haveEnoughResources(offers []*mesos.Offer) bool {
 	cpus := 0.0
@@ -309,6 +356,7 @@ func (sched *GoTaskScheduler) ResourceOffers(driver sched.SchedulerDriver, offer
 		//start app/framework scheduler
 		go func() {
 			sched.appSched.RunScheduler(sched.schedin, sched.schedout, sched.schedevent)
+			close(sched.exitChan) //stop msgpump
 			//scheduler exit, stop all
 			sched.driver.Stop(false)
 		}()
@@ -346,8 +394,8 @@ func (sched *GoTaskScheduler) ResourceOffers(driver sched.SchedulerDriver, offer
 		var tasks []*mesos.TaskInfo
 
 		for sched.tasksLaunched < sched.totalTasks &&
-			resInfo.CpusPerTask <= remainingCpus &&
-			resInfo.MemPerTask <= remainingMems {
+			resInfo.Resources["cpus"] <= remainingCpus &&
+			resInfo.Resources["mem"] <= remainingMems {
 
 			sched.tasksLaunched++
 
@@ -362,16 +410,16 @@ func (sched *GoTaskScheduler) ResourceOffers(driver sched.SchedulerDriver, offer
 				SlaveId:  offer.SlaveId,
 				Executor: sched.executor,
 				Resources: []*mesos.Resource{
-					util.NewScalarResource("cpus", resInfo.CpusPerTask),
-					util.NewScalarResource("mem", resInfo.MemPerTask),
+					util.NewScalarResource("cpus", resInfo.Resources["cpus"]),
+					util.NewScalarResource("mem", resInfo.Resources["mem"]),
 				},
 			}
 			log.Infof("Prepared task: %s with offer %s for launch\n", task.GetName(), offer.Id.GetValue())
 
 			sched.tasks[name] = task
 			tasks = append(tasks, task)
-			remainingCpus -= resInfo.CpusPerTask
-			remainingMems -= resInfo.MemPerTask
+			remainingCpus -= resInfo.Resources["cpus"]
+			remainingMems -= resInfo.Resources["mem"]
 			//
 			taskCnt++
 			if taskCnt >= resInfo.Count {
@@ -403,23 +451,27 @@ func (sched *GoTaskScheduler) StatusUpdate(driver sched.SchedulerDriver, status 
 	if sched.tasksFinished >= sched.tasksRunning {
 		log.Infoln("All running tasks completed.")
 		/* don't stop framework from here, wait till app scheduler exit
-		log.Infoln("All running tasks completed, stopping framework.")
 		close(sched.exitChan) //stop msgpump
 		driver.Stop(false)
 		*/
 	}
 
-	if status.GetState() == mesos.TaskState_TASK_LOST ||
-		status.GetState() == mesos.TaskState_TASK_KILLED ||
-		status.GetState() == mesos.TaskState_TASK_FAILED {
-		log.Infoln(
-			"Aborting because task", status.TaskId.GetValue(),
-			"is in unexpected state", status.State.String(),
-			"with message", status.GetMessage(),
-		)
-		close(sched.exitChan) //stop msgpump
-		driver.Abort()
+	switch {
+	case status.GetState() == mesos.TaskState_TASK_LOST:
+		sched.schedevent <- SchedEvent{TaskLost, status.TaskId}
+	case status.GetState() == mesos.TaskState_TASK_KILLED:
+		sched.schedevent <- SchedEvent{TaskKilled, status.TaskId}
+	case status.GetState() == mesos.TaskState_TASK_FAILED:
+		sched.schedevent <- SchedEvent{TaskFailed, status.TaskId}
 	}
+	/* allow scheduler to exit and shutdown from there
+	log.Infoln(
+		"Aborting because task", status.TaskId.GetValue(),
+		"is in unexpected state", status.State.String(),
+		"with message", status.GetMessage(),
+	)
+		close(sched.exitChan) //stop msgpump
+		driver.Abort()*/
 }
 
 //Mesos framework method.
@@ -436,7 +488,9 @@ func (sched *GoTaskScheduler) FrameworkMessage(driver sched.SchedulerDriver, exe
 }
 
 //Mesos framework method.
-func (sched *GoTaskScheduler) SlaveLost(sched.SchedulerDriver, *mesos.SlaveID) {}
+func (sched *GoTaskScheduler) SlaveLost(driver sched.SchedulerDriver, slaveId *mesos.SlaveID) {
+	sched.schedevent <- SchedEvent{SlaveLost, slaveId}
+}
 
 //Mesos framework method.
 func (sched *GoTaskScheduler) ExecutorLost(sched.SchedulerDriver, *mesos.ExecutorID, *mesos.SlaveID, int) {
@@ -445,6 +499,7 @@ func (sched *GoTaskScheduler) ExecutorLost(sched.SchedulerDriver, *mesos.Executo
 //Mesos framework method.
 func (sched *GoTaskScheduler) Error(driver sched.SchedulerDriver, err string) {
 	log.Infoln("Scheduler received error:", err)
+	sched.schedevent <- SchedEvent{Error, err}
 }
 
 //Return a Mesos scheduler driver for this scheduler.

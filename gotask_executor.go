@@ -84,9 +84,16 @@ func (exec *GoTaskExecutor) Reregistered(driver exec.ExecutorDriver, slaveInfo *
 	fmt.Println("Re-registered Executor on slave ", slaveInfo.GetHostname())
 }
 
-//Mesos framework method.
-func (exec *GoTaskExecutor) Disconnected(exec.ExecutorDriver) {
-	fmt.Println("Executor disconnected.")
+//when disconnected from slave, oure communication thru Framework message
+//should be broken, tell tasks to exit
+func (exec *GoTaskExecutor) Disconnected(driver exec.ExecutorDriver) {
+	fmt.Println("Executor disconnected, tell all tasks exit.")
+	for k, v := range exec.appTasks {
+		//remove this task, so no further messages will be sent to it
+		delete(exec.appTasks, k)
+		//close task's input chan to tell it exit
+		close(v.chanin)
+	}
 }
 
 //Launch app task in a separate goroutine.
@@ -153,9 +160,15 @@ func (exec *GoTaskExecutor) LaunchTask(driver exec.ExecutorDriver, taskInfo *mes
 	}(tname, appSt.chanin, appSt.chanout)
 }
 
-//Mesos framework method.
-func (exec *GoTaskExecutor) KillTask(exec.ExecutorDriver, *mesos.TaskID) {
-	fmt.Println("Kill task")
+//Scheduler kills a task, close it input chan.
+func (exec *GoTaskExecutor) KillTask(driver exec.ExecutorDriver, taskId *mesos.TaskID) {
+	taskName := taskId.GetValue()
+	fmt.Println("Kill task: ", taskName)
+	task := exec.appTasks[taskName]
+	//remove task, so it will not sent messages
+	delete(exec.appTasks, taskName)
+	//close input chan
+	close(task.chanin)
 }
 
 //Forward messages from scheduler to tasks.
@@ -169,15 +182,26 @@ func (exec *GoTaskExecutor) FrameworkMessage(driver exec.ExecutorDriver, rawMsg 
 	exec.appTasks[msg.TaskName].chanin <- msg
 }
 
-//Mesos framework method.
+//Scheduler shuts down, all tasks have to exit
 func (exec *GoTaskExecutor) Shutdown(exec.ExecutorDriver) {
-	fmt.Println("Shutting down the executor")
-	close(exec.exitChan) //shutdown framework msg pump
+	fmt.Println("Scheduler shuts down, all tasks have to exit")
+	for k, v := range exec.appTasks {
+		delete(exec.appTasks, k)
+		close(v.chanin)
+	}
+	//shutdown framework msg pump
+	close(exec.exitChan)
 }
 
-//Mesos framework method.
+//Unrecoverable error, tell all tasks exit
 func (exec *GoTaskExecutor) Error(driver exec.ExecutorDriver, err string) {
-	fmt.Println("Got error message:", err)
+	fmt.Println("Unrecoverable error, all tasks exit :", err)
+	for k, v := range exec.appTasks {
+		delete(exec.appTasks, k)
+		close(v.chanin)
+	}
+	//shutdown framework msg pump
+	close(exec.exitChan)
 }
 
 //Forward messages from tasks to scheduler.

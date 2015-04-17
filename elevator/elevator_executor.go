@@ -88,7 +88,7 @@ func floorTaskMain(chanin <-chan got.GoTaskMsg, chanout chan<- got.GoTaskMsg, ar
 	chanout <- msg.encode()
 	//wait for scheduler and other tasks ready
 	<-chanin
-	//then start running elevator
+	//then start running Floor
 	floor.Run()
 	//then tell scheduler i exit
 	msg = schedMsg{myName, -1, -1}
