@@ -7,7 +7,7 @@ mesosgot: Simple Go Task Scheduler on Mesos (prototype)
 
 3. each task is a Go function with following signature which will automatically run in a goroutine:
 
-     	func(in <-chan TaskMsg, out chan<-TaskMsg, args []string, env map[string]string) error
+	func(in <-chan TaskMsg, out chan<-TaskMsg, args []string, env map[string]string) error
 
 	* App tasks will use channel "in" to receive messages from schedulers.
 	* App tasks will send messages to scheduler via channel "out".
