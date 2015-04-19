@@ -37,7 +37,7 @@ mesosgot: Simple Go Task Scheduler on Mesos (prototype)
 				TasksResourceInfo() []*AppTaskResourceInfo
 				//start running app scheduler
 				RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent <-chan SchedEvent)
-                	}
+			}
 
 		* App scheduling logic is defined inside RunSchededuler().
 
