@@ -49,14 +49,14 @@ mesosgot: Simple Go Task Scheduler on Mesos (prototype)
       
 		* GoTaskExecutor will need a AppTaskExecutor as following:
 
-			type AppTaskExecutor interface {
-				//dispatch app tasks based on task name
-				RunTask(taskName string, in <- chan TaskMsg, out chan<-TaskMsg, args []string, env map[string]string) error
-				//register a task to a task name
-				RegisterTask(name string, task AppTask)
-				//register a task function to a task name
-				RegisterTaskFunc(name string, task AppTaskFunc)
-			}
+     			type AppTaskExecutor interface {
+     				//dispatch app tasks based on task name
+     				RunTask(taskName string, in <- chan TaskMsg, out chan<-TaskMsg, args []string, env map[string]string) error
+     				//register a task to a task name
+     				RegisterTask(name string, task AppTask)
+     				//register a task function to a task name
+     				RegisterTaskFunc(name string, task AppTaskFunc)
+     			}
 
 		* Inside RunTask(), call is dispatched by taskName and proper registered task function is called.
 		* Applications can either provide its own AppTaskExecutor, or use the builtin default AppTaskExecutor:
