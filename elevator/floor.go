@@ -11,7 +11,7 @@ import (
 
 //Floor:
 // generate random pickup requests for scheduler
-// each req is a rider obj
+// each req is a schedMsg
 type Floor struct {
 	id            int //floor number
 	taskName      string

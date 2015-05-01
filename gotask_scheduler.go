@@ -42,10 +42,17 @@ mesosgot: Simple Go Task Scheduler on Mesos (prototype)
             * GoTaskExecutor will need a AppTaskExecutor as following:
 
                 type AppTaskExecutor interface {
+		     //dispatch app tasks based on task name.
 	             RunTask(taskName string, in <- chan TaskMsg, out chan<-TaskMsg, args []string, env map[string]string) error
+		     //register a task to a task name
+		     RegisterTask(name string, task AppTask)
+		     //register a task function to a task name
+		     RegisterTaskFunc(name string, task AppTaskFunc)
                 }
 
             * Inside RunTask(), call is dispatched by taskName and proper registered task function is called.
+            * Application can provide its own TaskExecutor when creating GoTaskExecutor, otherwise a default AppTaskExecutor is used.
+
 Licensed under Apache 2.0
 */
 package mesosgot
@@ -137,7 +144,6 @@ type GoTaskScheduler struct {
 	schedin       chan GoTaskMsg
 	schedout      chan GoTaskMsg
 	schedevent    chan SchedEvent
-	exitChan      chan struct{}
 	cpuSize       float64
 	memSize       float64
 	tasksLaunched int
@@ -231,7 +237,6 @@ func NewGoTaskScheduler(userName string, aps AppTaskScheduler, conf *GoTaskSched
 		schedin:       make(chan GoTaskMsg, 2*DefTaskChanLen),
 		schedout:      make(chan GoTaskMsg, 2*DefTaskChanLen),
 		schedevent:    make(chan SchedEvent, 2*DefTaskChanLen),
-		exitChan:      make(chan struct{}),
 		cpuSize:       0,
 		memSize:       0,
 		tasksLaunched: 0,
@@ -282,22 +287,16 @@ func NewGoTaskScheduler(userName string, aps AppTaskScheduler, conf *GoTaskSched
 //Responsible for forwarding msgs from scheduler to tasks at slave nodes.
 func (sched *GoTaskScheduler) runMsgPump() {
 	fmt.Println("start sending framework messages to tasks")
-msgpump:
-	for {
-		select {
-		case msg := <-sched.schedout:
-			taskInfo := sched.tasks[msg.TaskName]
-			data, err := EncodeMsg(msg)
-			if err != nil {
-				log.Infoln("failed to encode msg: ", err)
-				continue msgpump
-			}
-			_, err = sched.driver.SendFrameworkMessage(sched.executor.ExecutorId, taskInfo.SlaveId, data)
-			if err != nil {
-				log.Infoln("failed SendFrameworkMessage to tasks: ", err)
-			}
-		case <-sched.exitChan:
-			break msgpump
+	for msg := range sched.schedout {
+		taskInfo := sched.tasks[msg.TaskName]
+		data, err := EncodeMsg(msg)
+		if err != nil {
+			log.Infoln("failed to encode msg: ", err)
+			continue
+		}
+		_, err = sched.driver.SendFrameworkMessage(sched.executor.ExecutorId, taskInfo.SlaveId, data)
+		if err != nil {
+			log.Infoln("failed SendFrameworkMessage to tasks: ", err)
 		}
 	}
 	fmt.Println("stop sending framework messages to tasks")
@@ -356,7 +355,7 @@ func (sched *GoTaskScheduler) ResourceOffers(driver sched.SchedulerDriver, offer
 		//start app/framework scheduler
 		go func() {
 			sched.appSched.RunScheduler(sched.schedin, sched.schedout, sched.schedevent)
-			close(sched.exitChan) //stop msgpump
+			close(sched.schedout) //stop msgpump
 			//scheduler exit, stop all
 			sched.driver.Stop(false)
 		}()
@@ -451,7 +450,6 @@ func (sched *GoTaskScheduler) StatusUpdate(driver sched.SchedulerDriver, status 
 	if sched.tasksFinished >= sched.tasksRunning {
 		log.Infoln("All running tasks completed.")
 		/* don't stop framework from here, wait till app scheduler exit
-		close(sched.exitChan) //stop msgpump
 		driver.Stop(false)
 		*/
 	}
@@ -470,7 +468,6 @@ func (sched *GoTaskScheduler) StatusUpdate(driver sched.SchedulerDriver, status 
 		"is in unexpected state", status.State.String(),
 		"with message", status.GetMessage(),
 	)
-		close(sched.exitChan) //stop msgpump
 		driver.Abort()*/
 }
 
@@ -548,7 +545,7 @@ func prepareExecutorInfo(config *GoTaskSchedConfig) *mesos.ExecutorInfo {
 	uri, executorCmd := serveExecutorArtifact(config)
 	executorUris = append(executorUris, &mesos.CommandInfo_URI{Value: uri, Executable: proto.Bool(true)})
 
-	executorCommand := fmt.Sprintf("./%s", executorCmd)
+	executorCommand := fmt.Sprintf("./%s -logtostderr=true -v=3 --decode-routines=2", executorCmd)
 
 	go http.ListenAndServe(fmt.Sprintf("%s:%d", config.Address, config.ArtifactPort), nil)
 	log.V(2).Info("Serving executor artifacts...")

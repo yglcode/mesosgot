@@ -45,19 +45,19 @@ func NewElevatorScheduler() *ElevatorScheduler {
 func (es *ElevatorScheduler) TasksResourceInfo() []*got.AppTaskResourceInfo {
 	return []*got.AppTaskResourceInfo{
 		&got.AppTaskResourceInfo{
-			Name:  "elevator",
+			Name:  "exampleTask1",
 			Count: TaskCount,
 			Resources: map[string]float64{
 				"cpus": 0.1,
-				"mem":  96,
+				"mem":  32,
 			},
 		},
 		&got.AppTaskResourceInfo{
-			Name:  "floor",
+			Name:  "exampleTask2",
 			Count: 4,
 			Resources: map[string]float64{
 				"cpus": 0.1,
-				"mem":  96,
+				"mem":  32,
 			},
 		},
 	}

@@ -21,38 +21,12 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	exec "github.com/mesos/mesos-go/executor"
 	got "github.com/yglcode/mesosgot"
 	"strconv"
 	"strings"
 )
-
-type ElevatorExecutor struct {
-	mux map[string]got.AppTaskFunc
-}
-
-func NewElevatorExecutor() *ElevatorExecutor {
-	return &ElevatorExecutor{make(map[string]got.AppTaskFunc)}
-}
-
-//task naming convention: taskType-id
-func (ee *ElevatorExecutor) Handle(taskType string, taskFunc got.AppTaskFunc) {
-	ee.mux[taskType] = taskFunc
-}
-
-//AppTaskExecutor.RunTask() already run in its own goroutine
-func (ee *ElevatorExecutor) RunTask(taskName string, chanin <-chan got.GoTaskMsg, chanout chan<- got.GoTaskMsg /*, args []string, env map[string]string*/) error {
-	pos := strings.LastIndex(taskName, "-")
-	if pos > 0 {
-		//taskName[:pos] is task type name, used for dispatch
-		taskFunc := ee.mux[taskName[:pos]]
-		args := []string{taskName}
-		return taskFunc(chanin, chanout, args)
-	}
-	return errors.New("Cannot find handler")
-}
 
 func elevatorTaskMain(chanin <-chan got.GoTaskMsg, chanout chan<- got.GoTaskMsg, args []string /*, env map[string]string*/) error {
 	myName := args[0]
@@ -99,12 +73,9 @@ func floorTaskMain(chanin <-chan got.GoTaskMsg, chanout chan<- got.GoTaskMsg, ar
 func main() {
 	fmt.Println("Starting Elevator Executor")
 
-	ee := NewElevatorExecutor()
-
-	ee.Handle("elevator", elevatorTaskMain)
-	ee.Handle("floor", floorTaskMain)
-
-	exc := got.NewGoTaskExecutor(ee)
+	exc := got.NewGoTaskExecutor(nil)
+	exc.RegisterTaskFunc("elevator", elevatorTaskMain)
+	exc.RegisterTaskFunc("floor", floorTaskMain)
 
 	driver, err := exec.NewMesosExecutorDriver(exc.DriverConfig())
 
