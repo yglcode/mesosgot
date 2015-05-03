@@ -33,48 +33,26 @@ const (
 	TimeWaitForTasksUp = 5 * time.Second
 )
 
-type ElevatorScheduler struct {
-	tasks map[string]bool
-}
-
-func NewElevatorScheduler() *ElevatorScheduler {
-	return &ElevatorScheduler{make(map[string]bool)}
-}
-
-func (es *ElevatorScheduler) TasksResourceInfo() []*got.AppTaskResourceInfo {
-	return []*got.AppTaskResourceInfo{
-		&got.AppTaskResourceInfo{
-			Name:  "elevator",
-			Count: DefaultNumberOfElevators,
-			Resources: map[string]float64{
-				"cpus": 0.1,
-				"mem":  96,
-			},
-		},
-		&got.AppTaskResourceInfo{
-			Name:  "floor",
-			Count: DefaultNumberOfFloors,
-			Resources: map[string]float64{
-				"cpus": 0.1,
-				"mem":  96,
-			},
-		},
-	}
-}
-
-func (es *ElevatorScheduler) taskCount() (count int) {
-	for _, ri := range es.TasksResourceInfo() {
-		count += ri.Count
-	}
-	return
-}
-
 //scheduler will run in its own goroutine, communicate with tasks thru chans
-func (es *ElevatorScheduler) RunScheduler(schedin <-chan got.GoTaskMsg, schedout chan<- got.GoTaskMsg, schedevent <-chan got.SchedEvent) {
-	//init scheduler
-	sched := NewScheduler(DefaultNumberOfFloors, DefaultNumberOfElevators, schedin, schedout)
+func schedFunc(schedin <-chan got.GoTaskMsg, schedout chan<- got.GoTaskMsg, schedevent <-chan got.SchedEvent) {
 	var msg schedMsg
-	taskCount := es.taskCount()
+	tasks := make(map[string]bool)
+	exitCh := make(chan bool,1)
+	taskCount := DefaultNumberOfElevators + DefaultNumberOfFloors
+	//run a goroutine to check scheduling events
+	go func() {
+		schedEventLoop: for {
+			select {
+			case evt := <- schedevent:
+				//just dump it, not real logic
+				log.Info(evt)
+			case <- exitCh:
+				break schedEventLoop
+			}
+		}
+		exitCh<-true
+	}()
+
 	//first wait for tasks come up
 waitloop:
 	for i := 0; i < taskCount; i++ {
@@ -87,7 +65,7 @@ waitloop:
 			if msg.currFloor != 0 || msg.goalFloor != 0 {
 				continue
 			}
-			es.tasks[msg.taskName] = true
+			tasks[msg.taskName] = true
 		case <-time.After(TimeWaitForTasksUp):
 			break waitloop
 		}
@@ -95,17 +73,19 @@ waitloop:
 	//tell all tasks start
 	msg.currFloor = 0
 	msg.goalFloor = 0
-	for tname, _ := range es.tasks {
+	for tname, _ := range tasks {
 		log.Infoln("notify: ", tname)
 		msg.taskName = tname
 		schedout <- msg.encode()
 	}
 	//run scheduler
+	//init scheduler
+	sched := NewScheduler(DefaultNumberOfFloors, DefaultNumberOfElevators, schedin, schedout)
 	sched.Run()
 	//tell all tasks stop
 	msg.currFloor = -1
 	msg.goalFloor = -1
-	for tname, _ := range es.tasks {
+	for tname, _ := range tasks {
 		log.Infoln("notify: ", tname)
 		msg.taskName = tname
 		schedout <- msg.encode()
@@ -121,14 +101,18 @@ exitloop:
 		switch {
 		case msg.currFloor == -1 && msg.goalFloor == -1:
 			log.Infoln("finished task: ", msg.taskName)
-			delete(es.tasks, msg.taskName)
-			if len(es.tasks) == 0 {
+			delete(tasks, msg.taskName)
+			if len(tasks) == 0 {
 				break exitloop
 			}
 		default:
 			log.Infof("recv %v\n", msg)
 		}
 	}
+	//tell sched event loop exit
+	exitCh <- true
+	//wait for it
+	<- exitCh
 }
 
 // ----------------------- func main() ------------------------- //
@@ -139,8 +123,22 @@ func main() {
 
 	schd := got.NewGoTaskScheduler(
 		"", //userName, Mesos-go will fill in user.
-		NewElevatorScheduler(),
-		schedConfig)
+		schedConfig,
+		nil)
+
+	schd.SpawnTask("elevator", DefaultNumberOfElevators,
+		map[string]float64{
+			"cpus": 0.1,
+			"mem":  96,
+		},
+	)
+	schd.SpawnTask("floor", DefaultNumberOfFloors,
+		map[string]float64{
+			"cpus": 0.1,
+			"mem":  96,
+		},
+	)
+	schd.RegisterSchedFunc(schedFunc)
 
 	driver, err := sched.NewMesosSchedulerDriver(schd.DriverConfig())
 

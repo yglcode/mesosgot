@@ -15,7 +15,7 @@ mesosgot: Simple Go Task Scheduler on Mesos (prototype)
       
 4. application scheduler is also a go function automatically running in a goroutine:
 
-    	RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent <-chan SchedEvent)
+    	func(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent <-chan SchedEvent)
 
 	* App scheduler will use channel "schedin" to receive messages from tasks.
 	* App scheduler will send messages to tasks via "schedout" channel.
@@ -29,39 +29,18 @@ mesosgot: Simple Go Task Scheduler on Mesos (prototype)
 
 7. programming:
 	* build two separate executables:
-		* app_scheduler: app scheduling logic
-		* app_executor: containing all app tasks functions, their registration and dispatching
+		* app_scheduler: app scheduling logic to run at cluster master.
+		* app_executor: containing all app tasks functions, their registration and dispatching logic to run at cluster slave machines.
 
 	* app_scheduler: create GoTaskScheduler and plug into MesosSchedulerDriver
 
-		* GoTaskScheduler will need a AppTaskScheduler as following:
-
-    			type AppTaskScheduler interface {
-    				//return resource requirements of all tasks
-    				TasksResourceInfo() []*AppTaskResourceInfo
-    				//start running app scheduler
-    				RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent <-chan SchedEvent)
-    			}
-
-		* App scheduling logic is defined inside RunSchededuler().
+		* call GoTaskScheduler.SpawnTask() to launch named app tasks in cluster.
+		* call GoTaskScheduler.RegisterSchedFunc() to register scheduler function.
 
 	* app_executor: create GoTaskExecutor and plug into MesosExecutorDriver
       
-		* GoTaskExecutor will need a AppTaskExecutor as following:
-
-     			type AppTaskExecutor interface {
-     				//dispatch app tasks based on task name
-     				RunTask(taskName string, in <- chan TaskMsg, out chan<-TaskMsg, args []string, env map[string]string) error
-     				//register a task to a task name
-     				RegisterTask(name string, task AppTask)
-     				//register a task function to a task name
-     				RegisterTaskFunc(name string, task AppTaskFunc)
-     			}
-
-		* Inside RunTask(), call is dispatched by taskName and proper registered task function is called.
-		* Applications can either provide its own AppTaskExecutor, or use the builtin default AppTaskExecutor:
-			* call GoTaskExecutor.RegisterTask() to register a task to a name.
-			* call GoTaskExecutor.RegisterTaskFunc() to register a task function to a name.
+		* call GoTaskExecutor.RegisterTask() to register app tasks to a name.
+		* call GoTaskExecutor.RegisterTaskFunc() to register app task function to a name.
 
 8. implement an elevator control system on top of it as example.
 

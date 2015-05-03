@@ -12,7 +12,7 @@ mesosgot: Simple Go Task Scheduler on Mesos (prototype)
       Channel "in" will be closed to tell task exit (such as when killed by scheduler, or system shuts down).
 
 4. application scheduler is also a go function automatically running in a goroutine:
-      RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent <-chan SchedEvent)
+      func(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent <-chan SchedEvent)
       App scheduler will use channel "schedin" to receive messages from tasks.
       App scheduler will send messages to tasks via "schedout" channel.
       App scheduler will receive scheduling events from "schedevent" channel.
@@ -22,36 +22,19 @@ mesosgot: Simple Go Task Scheduler on Mesos (prototype)
 6. simple/static resource allocation:
           * only accept resource offers when resources required by all tasks are offered
           * whenever any task fail, whole system shuts down
+
 7. programming:
       * build two separate executables:
-              * app_scheduler: app scheduling logic
-              * app_executor: containing all app tasks functions, their registration and dispatching
+              * app_scheduler: app scheduling logic to run at cluster master.
+              * app_executor: containing all app tasks functions, their registration and dispatching logic to run at cluster slave machines.
+
       * app_scheduler: create GoTaskScheduler and plug into MesosSchedulerDriver
-            * GoTaskScheduler will need a AppTaskScheduler as following:
-
-                type AppTaskScheduler interface {
-	             //return resource requirements of all tasks
-	             TasksResourceInfo() []*AppTaskResourceInfo
-	             //start running app scheduler
-	             RunScheduler(schedin <-chan TaskMsg, schedout chan<-TaskMsg, schedevent chan<-SchedEvent)
-                }
-
-            * App scheduling logic is defined inside RunSchededuler().
+            * call GoTaskScheduler.SpawnTask() to launch named tasks in cluster
+            * call GoTaskScheduler.RegisterSchedFunc() to register scheduler function.
 
       * app_executor: create GoTaskExecutor and plug into MesosExecutorDriver
-            * GoTaskExecutor will need a AppTaskExecutor as following:
-
-                type AppTaskExecutor interface {
-		     //dispatch app tasks based on task name.
-	             RunTask(taskName string, in <- chan TaskMsg, out chan<-TaskMsg, args []string, env map[string]string) error
-		     //register a task to a task name
-		     RegisterTask(name string, task AppTask)
-		     //register a task function to a task name
-		     RegisterTaskFunc(name string, task AppTaskFunc)
-                }
-
-            * Inside RunTask(), call is dispatched by taskName and proper registered task function is called.
-            * Application can provide its own TaskExecutor when creating GoTaskExecutor, otherwise a default AppTaskExecutor is used.
+            * call GoTaskExecutor.RegisterTask() to register app task to a name.
+            * call GoTaskExecutor.RegisterTaskFunc() to register app task function to a name.
 
 Licensed under Apache 2.0
 */
@@ -152,13 +135,14 @@ type GoTaskScheduler struct {
 	totalTasks    int
 }
 
-//Scheduler events (such as task failure, disconnect, etc.) to be forwarded to App scheduler, and limited set of events to tasks (such as disconn, shutdown)
+//Scheduler events types
 type SchedEventType int
 
 const (
 	Registered SchedEventType = iota
 	Reregistered
 	Disconnected
+	TaskLaunched
 	TaskRunning
 	TaskFinished
 	TaskFailed
@@ -176,6 +160,7 @@ var eventTypeNames = []string{
 	"Registered",
 	"Reregistered",
 	"Disconnected",
+	"TaskLaunched",
 	"TaskRunning",
 	"TaskFinished",
 	"TaskFailed",
@@ -195,6 +180,7 @@ func (et SchedEventType) String() string {
 	return "UnknownEventType"
 }
 
+//Scheduler events (such as task failure, disconnect, etc.) to be forwarded to App scheduler, and limited set of events to tasks (such as disconn, shutdown)
 type SchedEvent struct {
 	EventType SchedEventType
 	EventData interface{} //the type of event data depend on event type
@@ -209,8 +195,27 @@ type AppTaskResourceInfo struct {
 	Env       map[string]string
 }
 
+//SchedulerTask for scheduling logic to run at cluster master.
+type AppSchedulerTask interface {
+	//App scheduler will use channel "schedin" to receive messages from tasks.
+	//App scheduler will send messages to tasks via "schedout" channel.
+	//App scheduler will receive scheduling events from "schedevent" channel.
+	Run(schedin <-chan GoTaskMsg, schedout chan<- GoTaskMsg, schedevent <-chan SchedEvent)
+}
+
+//SchedulerFunc for scheduling logic to run at cluster master.
+//App scheduler will use channel "schedin" to receive messages from tasks.
+//App scheduler will send messages to tasks via "schedout" channel.
+//App scheduler will receive scheduling events from "schedevent" channel.
+type AppSchedulerFunc func(schedin <-chan GoTaskMsg, schedout chan<- GoTaskMsg, schedevent <-chan SchedEvent)
+
+func (asf AppSchedulerFunc) Run(schedin <-chan GoTaskMsg, schedout chan<- GoTaskMsg, schedevent <-chan SchedEvent) {
+	asf(schedin, schedout, schedevent)
+}
+
 //Common interface implmented by all app/framework scheduler
 type AppTaskScheduler interface {
+	//-- internal interface to mesos --
 	//return resource requirements of all tasks
 	TasksResourceInfo() []*AppTaskResourceInfo
 	//start running app scheduler in a separate goroutine.
@@ -218,11 +223,69 @@ type AppTaskScheduler interface {
 	//App scheduler will send messages to tasks via "schedout" channel.
 	//App scheduler will receive scheduling events from "schedevent" channel.
 	RunScheduler(schedin <-chan GoTaskMsg, schedout chan<- GoTaskMsg, schedevent <-chan SchedEvent)
+
+	//-- external interface to user code --
+	//add one app task resource info
+	SpawnTask(name string, count int, res map[string]float64, /*args, env*/)
+	//add a set of app tasks
+	SpawnTasks(tasks []*AppTaskResourceInfo)
+	//register scheduler task
+	RegisterSchedTask(sched AppSchedulerTask)
+	//register scheduler func
+	RegisterSchedFunc(sched AppSchedulerFunc)
+}
+
+//when no external AppTaskScheduler is provided when GoTaskScheduler is created, a default DefAppTaskScheduler is used
+type DefAppTaskScheduler struct {
+	tasksResourceReqs []*AppTaskResourceInfo
+	appSched AppSchedulerTask
+}
+
+//create a default AppTaskScheduler
+func NewDefAppTaskScheduler() *DefAppTaskScheduler {
+	return &DefAppTaskScheduler{}
+}
+
+//return resource requests by app tasks
+func (ats *DefAppTaskScheduler) TasksResourceInfo() []*AppTaskResourceInfo {
+	return ats.tasksResourceReqs
+}
+
+//run registered app scheduler task/func in a goroutine
+func (ats *DefAppTaskScheduler)	RunScheduler(schedin <-chan GoTaskMsg, schedout chan<- GoTaskMsg, schedevent <-chan SchedEvent) {
+	if ats.appSched != nil {
+		ats.appSched.Run(schedin, schedout, schedevent)
+	}
+}
+
+//launch a app task in cluster
+func (ats *DefAppTaskScheduler)	SpawnTask(name string, count int, res map[string]float64, /*args, env*/) {
+	ats.tasksResourceReqs = append(ats.tasksResourceReqs,
+		&AppTaskResourceInfo{
+			Name: name,
+			Count: count,
+			Resources: res,
+		})
+}
+
+//launch a set of app tasks in cluster
+func (ats *DefAppTaskScheduler)	SpawnTasks(tasks []*AppTaskResourceInfo) {
+	ats.tasksResourceReqs = append(ats.tasksResourceReqs, tasks...)
+}
+
+//register a app scheduler task to run in a goroutine
+func (ats *DefAppTaskScheduler)	RegisterSchedTask(sched AppSchedulerTask) {
+	ats.appSched = sched
+}
+
+//register a app scheduler func to run in a goroutine
+func (ats *DefAppTaskScheduler)	RegisterSchedFunc(sched AppSchedulerFunc) {
+	ats.appSched = AppSchedulerFunc(sched)
 }
 
 //Create a new Go Task Scheduler to be used with Mesos Scheduler Driver.
-//Use an instance of AppTaskScheduler to define tasks resource requirement and app scheduling.
-func NewGoTaskScheduler(userName string, aps AppTaskScheduler, conf *GoTaskSchedConfig) (sched *GoTaskScheduler) {
+//If an instance of AppTaskScheduler is provided, it is used for tasks resource requirement and app scheduling; otherwise a default app task scheduler is used.
+func NewGoTaskScheduler(userName string, conf *GoTaskSchedConfig, aps AppTaskScheduler) (sched *GoTaskScheduler) {
 	sched = &GoTaskScheduler{
 		config:        conf,
 		executor:      nil,
@@ -244,13 +307,10 @@ func NewGoTaskScheduler(userName string, aps AppTaskScheduler, conf *GoTaskSched
 		tasksFinished: 0,
 		totalTasks:    0,
 	}
-	//calc appTasks resource requirements
-	taskResInfo := aps.TasksResourceInfo()
-	for _, tri := range taskResInfo {
-		sched.totalTasks += tri.Count
-		sched.cpuSize += float64(tri.Count) * tri.Resources["cpus"]
-		sched.memSize += float64(tri.Count) * tri.Resources["mem"]
+	if aps == nil {
+		sched.appSched = NewDefAppTaskScheduler()
 	}
+
 	// build command executor
 	sched.executor = prepareExecutorInfo(conf)
 	//
@@ -284,6 +344,26 @@ func NewGoTaskScheduler(userName string, aps AppTaskScheduler, conf *GoTaskSched
 	return
 }
 
+//launch a app task in cluster
+func (sched *GoTaskScheduler) SpawnTask(name string, count int, res map[string]float64, /*args, env*/) {
+	sched.appSched.SpawnTask(name, count, res)
+}
+
+//launch a set of app tasks in cluster
+func (sched *GoTaskScheduler) SpawnTasks(tasks []*AppTaskResourceInfo) {
+	sched.appSched.SpawnTasks(tasks)
+}
+
+//register a app scheduler task to run in a goroutine
+func (sched *GoTaskScheduler) RegisterSchedTask(schedT AppSchedulerTask) {
+	sched.appSched.RegisterSchedTask(schedT)
+}
+
+//register a app scheduler func to run in a goroutine
+func (sched *GoTaskScheduler) RegisterSchedFunc(schedF AppSchedulerFunc) {
+	sched.appSched.RegisterSchedFunc(schedF)
+}
+
 //Responsible for forwarding msgs from scheduler to tasks at slave nodes.
 func (sched *GoTaskScheduler) runMsgPump() {
 	fmt.Println("start sending framework messages to tasks")
@@ -305,17 +385,29 @@ func (sched *GoTaskScheduler) runMsgPump() {
 //Mesos framework method.
 func (sched *GoTaskScheduler) Registered(driver sched.SchedulerDriver, frameworkId *mesos.FrameworkID, masterInfo *mesos.MasterInfo) {
 	log.Infoln("Framework Registered with Master ", masterInfo)
+	sched.calcResourceTotals()
 }
 
 //Mesos framework method.
 func (sched *GoTaskScheduler) Reregistered(driver sched.SchedulerDriver, masterInfo *mesos.MasterInfo) {
 	log.Infoln("Framework Re-Registered with Master ", masterInfo)
+	sched.calcResourceTotals()
 }
 
 //Mesos framework method.
 func (sched *GoTaskScheduler) Disconnected(driver sched.SchedulerDriver) {
 	log.Infoln("Framework Disconnected with Driver")
 	sched.schedevent <- SchedEvent{Disconnected, driver}
+}
+
+func (sched *GoTaskScheduler) calcResourceTotals() {
+	//calc appTasks resource requirements
+	taskResInfo := sched.appSched.TasksResourceInfo()
+	for _, tri := range taskResInfo {
+		sched.totalTasks += tri.Count
+		sched.cpuSize += float64(tri.Count) * tri.Resources["cpus"]
+		sched.memSize += float64(tri.Count) * tri.Resources["mem"]
+	}
 }
 
 func (sched *GoTaskScheduler) haveEnoughResources(offers []*mesos.Offer) bool {
@@ -432,6 +524,7 @@ func (sched *GoTaskScheduler) ResourceOffers(driver sched.SchedulerDriver, offer
 		}
 		log.Infoln("Launching ", len(tasks), "tasks for offer", offer.Id.GetValue())
 		driver.LaunchTasks([]*mesos.OfferID{offer.Id}, tasks, &mesos.Filters{RefuseSeconds: proto.Float64(sched.config.TaskRefuseSeconds)})
+		sched.schedevent <- SchedEvent{TaskLaunched, len(tasks)}
 	}
 }
 
