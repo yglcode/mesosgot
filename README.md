@@ -1,7 +1,7 @@
 mesosgot: Simple Go Task Scheduler on Mesos (prototype)
 =======================================================
 
-1. very thin layer over mesos-go api (and example scheduler/executor).
+1. very thin layer over mesos-go api (and example scheduler/executor); with simple API (http://godoc.org/github.com/yglcode/mesosgot).
 
 2. for launching cluster of relatively long running tasks running in its own goroutine at slave machines.
 
